@@ -81,8 +81,11 @@ contract TruPay {
 
         bool retrieved_escrow; // only when the buyer agrees to the receiving data with integrity
 
-        bool added_broker;
-        bool broker_paid;
+        bool added_seller_broker;
+        bool seller_broker_paid;
+        
+        bool added_buyer_broker;
+        bool buyer_broker_paid;
     }
     
     seller private seller_info;
@@ -93,9 +96,6 @@ contract TruPay {
         uint256 paid_amt; // escrow + value of the product
         bool paid;
         bool retrieved_escrow;
-        
-        bool added_broker;
-        bool broker_paid;
     }
     
     buyer private buyer_info;
@@ -117,46 +117,68 @@ contract TruPay {
         check_integ = false;
     }
     
-    function add_data(uint256 _escrow, uint256 _val_product, string decrypt_key, string hashData) external onlyOwner {
+    function update_state(uint256 _escrow, uint256 _val_product, string decrypt_key, string hashData) external onlyOwner {
         require (update_data == 1);
-        require (buyer_enrolled == false);
         
-        seller memory seller_det = seller(_escrow, false, _val_product, decrypt_key, hashData, false, false, false);
+        seller memory seller_det = seller(_escrow, false, _val_product, decrypt_key, hashData, false, false, false, false, false);
         seller_info = seller_det;
     }
     
-    function add_seller_broker (address _broker_address) external onlyOwner {
-        require (update_data == 0);
-        require (seller_info.added_broker == false);
-        
-        seller_broker = _broker_address;
-        seller_info.added_broker = true;
-    }
-    
-    function pay_escrow_by_seller_broker() public payable {
-        require (seller_info.added_broker == true);
-        require (msg.sender == seller_broker);
-        require (seller_info.broker_paid == false);
-        require (msg.value == seller_info.escrow);
-        
-        seller_info.broker_paid = true;
-    }
-    
     function pay_escrow_by_seller() external onlyOwner payable {
+        require (seller_info.escrow > 0);
+        bytes memory decryption_key = bytes(seller_info.decryption_key);
+        require (decryption_key.length > 0);
+        bytes memory hash_data = bytes(seller_info.hash_data);
+        require (hash_data.length > 0);
         require (seller_info.paid_escrow == false);
         require (msg.value == seller_info.escrow);
-        require (buyer_enrolled == false);
-        require (seller_info.added_broker == true);
         
         update_data = 0;
         seller_info.paid_escrow = true;
     }
     
-    function enroll_buyer() public {
+    function add_seller_broker (address _broker_address) external onlyOwner {
         require (update_data == 0);
+        require (seller_info.paid_escrow == true);
+        require (seller_info.added_seller_broker == false);
+        
+        seller_broker = _broker_address;
+        seller_info.added_seller_broker = true;
+    }
+    
+    function pay_escrow_by_seller_broker() public payable {
+        require (seller_info.added_seller_broker == true);
+        require (msg.sender == seller_broker);
+        require (seller_info.seller_broker_paid == false);
+        require (msg.value == seller_info.escrow);
+        
+        seller_info.seller_broker_paid = true;
+    }
+    
+    function add_buyer_broker (address _broker_address) public {
+        require (msg.sender == seller_broker);
+        require (seller_info.seller_broker_paid == true);
+        require (seller_info.added_buyer_broker == false);
+        
+        buyer_broker = _broker_address;
+        seller_info.added_buyer_broker = true;
+    }
+    
+    function pay_escrow_by_buyer_broker() public payable {
+        require (seller_info.added_buyer_broker == true);
+        require (msg.sender == buyer_broker);
+        require (seller_info.buyer_broker_paid == false);
+        require (msg.value == seller_info.escrow);
+        
+        seller_info.buyer_broker_paid = true;
+    }
+    
+    function add_buyer(address _broker_address) public {
+        require (msg.sender == buyer_broker);
+        require (seller_info.buyer_broker_paid == true);
         require (buyer_enrolled == false);
         
-        buyer memory buyer_det = buyer(msg.sender, 0, false, false, false, false);
+        buyer memory buyer_det = buyer(_broker_address, 0, false, false);
         buyer_info = buyer_det;
         buyer_enrolled = true;
     }
@@ -171,30 +193,13 @@ contract TruPay {
         buyer_info.paid_amt = msg.value;
     }
     
-    function add_buyer_broker (address _broker_address) public {
-        require (buyer_enrolled == true);
-        require (buyer_info.added_broker == false);
-        require (msg.sender == buyer_info.addr);
-        
-        buyer_broker = _broker_address;
-        buyer_info.added_broker = true;
-    }
-    
-    function pay_escrow_by_buyer_broker() public payable {
-        require (buyer_info.added_broker == true);
-        require (msg.sender == buyer_broker);
-        require (buyer_info.broker_paid == false);
-        require (msg.value == seller_info.escrow);
-        
-        buyer_info.broker_paid = true;
-    }
-    
     function check_integrity (bool _integrity) public returns (string decrypt_key) {
         require (msg.sender == buyer_info.addr);
         require (buyer_info.paid == true);
         require (seller_info.paid_escrow == true);
-        require (seller_info.broker_paid == true);
-        require (buyer_info.broker_paid == true);
+        require (seller_info.buyer_broker_paid == true);
+        require (seller_info.seller_broker_paid == true);
+        require (check_integ == false);
         
         if (_integrity) {
             buyer_broker.transfer(uint256(seller_info.escrow + (seller_info.val_product*5/100)));
@@ -204,18 +209,16 @@ contract TruPay {
             
             return (seller_info.decryption_key);            
         } else {
-            msg.sender.transfer(uint256(seller_info.val_product));
+            msg.sender.transfer(uint256(seller_info.val_product*9/10));
             
             return ('');
         }
     }
     
-    function validate_product (bool _valid) public returns (bool payment_status) { 
+    function validate_static_data (bool _valid) public returns (bool payment_status) { 
         // passed true if valid else false
         require (check_integ == true);
         require (msg.sender == buyer_info.addr);
-        require (buyer_info.retrieved_escrow == false);
-        require (seller_info.retrieved_escrow == false);
 
         
         if (_valid) {
@@ -227,7 +230,7 @@ contract TruPay {
             
             return true;
         } else {
-            msg.sender.transfer(uint256(seller_info.val_product*9/10));
+            msg.sender.transfer(uint256(seller_info.val_product*5/10));
             
             return false;
         }
@@ -240,13 +243,13 @@ contract TruPay {
         return (seller_info.escrow);
     }
     
-    function getHashData() public view returns (string) {
+    function getHashEncData() public view returns (string) {
         require (update_data == 0);
         
         return (seller_info.hash_data);
     }
     
-    function checkTransactionValid() public view returns (bool) {
+    function checkTransactionSuccess() public view returns (bool) {
         return (seller_info.retrieved_escrow && buyer_info.retrieved_escrow);
     }
   
